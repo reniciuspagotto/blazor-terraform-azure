@@ -1,0 +1,194 @@
+trigger:
+  - master
+
+stages:
+
+- stage: 'Build'
+
+  variables:
+    buildConfiguration: 'Release'
+
+  jobs:
+  - job: Linux
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    workspace:
+      clean: all
+
+    steps:
+
+      - task: UseDotNet@2 
+        displayName: "Install .NET Core 3.1"
+        inputs:
+          version: '3.1.x'
+          packageType: sdk
+          installationPath: $(Agent.ToolsDirectory)/dotnet
+        
+      - task: DotNetCoreCLI@2
+        displayName: "NuGet Restore"
+        inputs:
+          command: restore
+          projects: '**/*.csproj'
+
+      - task: DotNetCoreCLI@2
+        displayName: "Build Solution"
+        inputs:
+          command: build
+          projects: '**/*.csproj'
+          arguments: '--configuration $(buildConfiguration)'
+
+- stage: 'Publish'
+
+  variables:
+    buildConfiguration: 'Release'
+
+  jobs:
+  - job: Linux
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    workspace:
+      clean: all
+
+    steps:
+
+      - task: DotNetCoreCLI@2
+        displayName: "Publish Artifact"
+        inputs:
+          command: publish
+          publishWebProjects: false
+          arguments: '--configuration $(BuildConfiguration) --output $(Build.ArtifactStagingDirectory)'
+          zipAfterPublish: True
+
+      - task: PublishBuildArtifacts@1
+        displayName: "Upload Artifacts"
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: 'ranchodev'
+          publishLocation: 'Container'
+
+- stage: 'Terraform'
+
+  jobs:
+  - job: Linux
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+
+      - task: TerraformInstaller@0
+        displayName: 'Install Terraform 0.13.2'
+        inputs:
+          terraformVersion: '0.13.2'
+
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Init Azure Provider'
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          commandOptions: '-reconfigure'
+          backendServiceArm: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+          backendAzureRmResourceGroupName: 'General'
+          backendAzureRmStorageAccountName: 'ranchodev'
+          backendAzureRmContainerName: 'tfstate'
+          backendAzureRmKey: 'terraform.tfstate'
+
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Execute Plan'
+        inputs:
+          provider: 'azurerm'
+          command: 'plan'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          commandOptions: '-out="main.tfplan"'
+          environmentServiceNameAzureRM: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Execute Apply'
+        inputs:
+          provider: 'azurerm'
+          command: 'apply'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          commandOptions: '"main.tfplan"'
+          environmentServiceNameAzureRM: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+
+- stage: 'Deploy'
+
+  jobs:
+  - job: Linux
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+
+      - task: DownloadBuildArtifacts@0
+        inputs:
+          buildType: 'current'
+          downloadType: 'single'
+          artifactName: 'ranchodev'
+          downloadPath: '$(System.ArtifactsDirectory)'
+
+      - task: AzureRmWebAppDeployment@4
+        inputs:
+          ConnectionType: 'AzureRM'
+          azureSubscription: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+          appType: 'webApp'
+          WebAppName: 'ranchodev-blazor-appservice'
+          packageForLinux: '$(Build.ArtifactStagingDirectory)/**/*.zip'
+          
+- stage: 'Sleep'
+
+  jobs:
+  - job: RunsOnServer
+    pool: Server
+
+    steps:
+
+      - task: Delay@1
+        inputs:
+          delayForMinutes: '2'
+          
+- stage: 'Destroy'
+
+  jobs:
+  - job: Linux
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+      
+      - task: TerraformInstaller@0
+        displayName: 'Install Terraform 0.13.2'
+        inputs:
+          terraformVersion: '0.13.2'
+      
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Init Azure Provider'
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          commandOptions: '-reconfigure'
+          backendServiceArm: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+          backendAzureRmResourceGroupName: 'General'
+          backendAzureRmStorageAccountName: 'ranchodev'
+          backendAzureRmContainerName: 'tfstate'
+          backendAzureRmKey: 'terraform.tfstate'
+        
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Execute Plan'
+        inputs:
+          provider: 'azurerm'
+          command: 'plan'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          commandOptions: '-out="main.tfplan"'
+          environmentServiceNameAzureRM: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
+
+      - task: TerraformTaskV1@0
+        displayName: 'Terraform Destroy'
+        inputs:
+          provider: 'azurerm'
+          command: 'destroy'
+          workingDirectory: '$(System.DefaultWorkingDirectory)/IaC'
+          environmentServiceNameAzureRM: 'Azure (tr628hd7-98h6-1290-9087-4cjt6cfaadf4)'
